@@ -57,6 +57,7 @@ def setup_logging(log_filename: Optional[str], keep: int, debug: bool) -> loggin
 
     # optionally log to file
     if log_filename:
+        LOG_FILE_PATH = log_filename
         try:
             timestamp = datetime.now().strftime("%Y-%m-%d")
             LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -64,7 +65,7 @@ def setup_logging(log_filename: Optional[str], keep: int, debug: bool) -> loggin
             logger.debug("Logging to %s", LOG_FILE_PATH)
 
 
-            fh = logging.FileHandler(LOG_FILE_PATH, encoding="utf-8")
+            fh = logging.FileHandler(LOG_FILE_PATH, mode="a", encoding="utf-8")
             fh.setFormatter(formatter)
             logger.addHandler(fh)
 
@@ -74,16 +75,19 @@ def setup_logging(log_filename: Optional[str], keep: int, debug: bool) -> loggin
                 LOG_FILE_PATH,
             )
 
-    cleanup_old_logs(LOG_DIR, keep, logger)
+    cleanup_old_logs(LOG_DIR, log_filename, keep, logger)
     return logger
 
-def cleanup_old_logs(log_dir: Path, keep: int, logger) -> None:
-    if keep <= 0:
+def cleanup_old_logs(log_dir: Path, log_filename: Optional[str], keep: int, logger) -> None:
+    if keep <= 0 or not log_dir.exists():
         return
 
+    base = Path(log_filename).stem
     files = [
         f for f in log_dir.iterdir()
-        if f.is_file() and f.suffix.lower() == ".log"
+        if f.is_file()
+        and f.suffix.lower() == ".log"
+        and f.name.startswith(base + "_")
     ]
 
     if len(files) <= keep:
@@ -239,15 +243,22 @@ def apply_new_state(
     state: Dict[str, Any],
     current_ipv4: Optional[str],
     current_ipv6: Optional[str],
+    records_a: List[str],
+    records_aaaa: List[str],
 ) -> Dict[str, Any]:
-    """
-    Produces the new state dict after a successful DNS update.
-    """
+    # Produces the new state dict after a successful DNS update.
     new_state = dict(state)
+
     if current_ipv4:
         new_state["last_ipv4"] = current_ipv4
     if current_ipv6:
         new_state["last_ipv6"] = current_ipv6
+    
+    new_state["records"] = {
+        "A": sorted(set(records_a)),
+        "AAAA": sorted(set(records_aaaa)),
+    }
+
     new_state["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     return new_state
 
@@ -265,9 +276,8 @@ def cf_list_records(
     record_type: str,
     name: str,
 ) -> List[Dict[str, Any]]:
-    """
-    Returns a list of DNS record objects matching type+name (usually 0 or 1, but can be >1).
-    """
+    # Returns a list of DNS record objects matching type+name (usually 0 or 1, but can be >1).
+
     url = f"{CF_API_BASE}/zones/{zone_id}/dns_records"
     params = {"type": record_type, "name": name}
 
@@ -481,13 +491,13 @@ def main():
     load_dotenv()
     errors = False
 
-    DRY_RUN = parse_bool(os.getenv("DRY_RUN")) or 0
-    VARIABLES = parse_bool(os.getenv("VARIABLES")) or 0
+    DRY_RUN = parse_bool(os.getenv("DRY_RUN"))
+    VARIABLES = parse_bool(os.getenv("VARIABLES"))
 
     # Logging
     LOG_FILENAME = os.getenv("LOG_FILENAME", "").strip() or None
     LOG_KEEP = parse_int(os.getenv("LOG_KEEP"), 0)  # 0 = keep everything
-    LOG_DEBUG = parse_bool(os.getenv("LOG_DEBUG")) or 0
+    LOG_DEBUG = parse_bool(os.getenv("LOG_DEBUG"))
     logger = setup_logging(LOG_FILENAME, LOG_KEEP, LOG_DEBUG)
     logger.debug("=======================================================")
     logger.debug("Starting configuration check")
@@ -511,13 +521,13 @@ def main():
         logger.warning("No DNS records configured (RECORDS_A and RECORDS_AAAA are both empty)")
         errors = True
 
-    CHECK_V4 = parse_bool(os.getenv("CHECK_V4")) or 0
-    CHECK_V6 = parse_bool(os.getenv("CHECK_V6")) or 0
+    CHECK_V4 = parse_bool(os.getenv("CHECK_V4"))
+    CHECK_V6 = parse_bool(os.getenv("CHECK_V6"))
 
     ip_v4_check_urls = parse_csv_list(os.getenv("ip_v4_check_urls")) or [
         "https://api.ipify.org?format=json",
         "https://ifconfig.co/json",
-        "https://icanhazip.com",       
+        "https://icanhazip.com",
     ]
     ip_v6_check_urls = parse_csv_list(os.getenv("ip_v6_check_urls")) or [
         "https://api64.ipify.org?format=json",
@@ -525,7 +535,7 @@ def main():
         "https://icanhazip.com",
     ]
 
-    STATE_FILENAME = os.getenv("STATE_FILENAME", "").strip() or "cf_ddns_state.json"
+    STATE_FILENAME = os.getenv("STATE_FILENAME", "").strip() or "cf_ddns_state"
 
     LOOKUP_RETRY_SECONDS = parse_int(os.getenv("LOOKUP_RETRY_SECONDS"), 3)
     LOOKUP_RETRIES = parse_int(os.getenv("LOOKUP_RETRIES"), 3)
@@ -577,14 +587,31 @@ def main():
     #
     STATE_PATH = LOG_DIR / f"{STATE_FILENAME}.json"
     state = load_state(logger, STATE_PATH)
+    known_records = state.get("records", {})
+    known_a = set(known_records.get("A", []))
+    known_aaaa = set(known_records.get("AAAA", []))
     should_update_v4, should_update_v6 = decide_updates(logger, ip4, ip6, state)
     logger.debug("Decision: update_ipv4=%s update_ipv6=%s", should_update_v4, should_update_v6)
 
-    if should_update_v4 and ip4 and RECORDS_A:
-        all_plan.extend(plan_record_updates(logger, CF_API_TOKEN, CF_ZONE_ID, "A", RECORDS_A, ip4))
+    if ip4 and RECORDS_A:
+        to_check = [r for r in RECORDS_A if r not in known_a]
+        to_assume_ok = [r for r in RECORDS_A if r in known_a]
 
-    if should_update_v6 and ip6 and RECORDS_AAAA:
-        all_plan.extend(plan_record_updates(logger, CF_API_TOKEN, CF_ZONE_ID, "AAAA", RECORDS_AAAA, ip6))
+        if to_check:
+            all_plan.extend(plan_record_updates(logger, CF_API_TOKEN, CF_ZONE_ID, "A", to_check, ip4))
+        if should_update_v4:
+            all_plan.extend(plan_record_updates(logger, CF_API_TOKEN, CF_ZONE_ID, "A", to_assume_ok, ip4))
+
+
+    if ip6 and RECORDS_AAAA:
+        to_check = [r for r in RECORDS_AAAA if r not in known_aaaa]
+        to_assume_ok = [r for r in RECORDS_AAAA if r in known_aaaa]
+
+        if to_check:
+            all_plan.extend(plan_record_updates(logger, CF_API_TOKEN, CF_ZONE_ID, "AAAA", to_check, ip6))
+        if should_update_v6:
+            all_plan.extend(plan_record_updates(logger, CF_API_TOKEN, CF_ZONE_ID, "AAAA", to_assume_ok, ip6))
+
     
     applied_count = apply_update_plan(logger, CF_API_TOKEN, CF_ZONE_ID, all_plan, dry_run=DRY_RUN)
 
@@ -601,7 +628,7 @@ def main():
     logger.info("DNS records updated successfully (%d record(s)).", applied_count)
 
     # Now update + save state (only after success)
-    new_state = apply_new_state(state, ip4, ip6)
+    new_state = apply_new_state(state, ip4, ip6, RECORDS_A, RECORDS_AAAA)
     save_state(logger, STATE_PATH, new_state)    
 
     return 0
