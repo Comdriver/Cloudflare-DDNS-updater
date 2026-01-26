@@ -2,8 +2,6 @@ services:
   cf-ddns:
     build: .
     container_name: cf-ddns
-    env_file:
-      - .env
     volumes:
       - ./logs:/app/logs
     restart: "no"
