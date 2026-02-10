@@ -4,4 +4,4 @@ services:
     container_name: cf-ddns
     volumes:
       - ./logs:/app/logs
-    restart: "no"
+    restart: unless-stopped
