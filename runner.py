@@ -12,6 +12,7 @@ def log(msg: str) -> None:
 
 def main() -> None:
     delay = int(os.getenv("RUN_EVERY_SECONDS", "300"))  # default 5 minutes
+    output = int(os.getenv("RUNNER_LOG", False))  # defines if should giver log output
     if delay < 10:
         log(f"RUN_EVERY_SECONDS={delay} too low, forcing minimum 10s.")
         delay = 10
@@ -30,12 +31,14 @@ def main() -> None:
             log(f"main.py failed with exit code {result.returncode}. Stopping runner.")
             sys.exit(result.returncode)
 
-        log("main.py finished successfully.")
+        if output:
+            log("main.py finished successfully.")
 
         elapsed = time.time() - start
         sleep_for = max(0, delay - int(elapsed))
 
-        log(f"Sleeping {sleep_for} seconds...")
+        if output:
+            log(f"Sleeping {sleep_for} seconds...")
         time.sleep(sleep_for)
 
 if __name__ == "__main__":
