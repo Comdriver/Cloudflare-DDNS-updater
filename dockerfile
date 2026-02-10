@@ -10,4 +10,4 @@ COPY . .
 RUN mkdir -p /app/logs
 
 # Run the script
-CMD ["python", "src/main.py"]
+CMD ["python", "runner.py"]
