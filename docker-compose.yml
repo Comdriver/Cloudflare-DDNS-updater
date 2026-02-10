@@ -2,6 +2,18 @@ services:
   cf-ddns:
     build: .
     container_name: cf-ddns
+
+    environment:
+      CF_API_TOKEN: ${CF_API_TOKEN}
+      CF_ZONE_ID: ${CF_ZONE_ID}
+      RECORDS_A: ${RECORDS_A}
+      RECORDS_AAAA: ${RECORDS_AAAA}
+      CHECK_V4: ${CHECK_V4:-1}
+      CHECK_V6: ${CHECK_V6:-0}
+      CF_DEFAULT_PROXIED: ${CF_DEFAULT_PROXIED:-1}
+      DRY_RUN: ${DRY_RUN:-0}
+      RUN_EVERY_SECONDS: ${RUN_EVERY_SECONDS:-300}
+      
     volumes:
       - ./logs:/app/logs
     restart: unless-stopped
